@@ -1,7 +1,7 @@
 {
-	"name": "obsidian-sample-plugin",
-	"version": "1.0.0",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"name": "obsidian-bases-views",
+	"version": "0.1.0",
+	"description": "Adds rich visualizations (Kanban, and more) as custom view types for Obsidian Bases.",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {

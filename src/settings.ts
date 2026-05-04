@@ -1,36 +1,72 @@
-import {App, PluginSettingTab, Setting} from "obsidian";
-import MyPlugin from "./main";
+import { App, PluginSettingTab, Setting } from 'obsidian';
+import type BasesViewsPlugin from './main';
 
-export interface MyPluginSettings {
-	mySetting: string;
+export interface BasesViewsSettings {
+	touchDragHoldMs: number;
+	hoverPreviewOnModifier: boolean;
+	bodySearchCacheSize: number;
 }
 
-export const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
-}
+export const DEFAULT_SETTINGS: BasesViewsSettings = {
+	touchDragHoldMs: 250,
+	hoverPreviewOnModifier: true,
+	bodySearchCacheSize: 50,
+};
 
-export class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
+export class BasesViewsSettingTab extends PluginSettingTab {
+	constructor(app: App, private readonly plugin: BasesViewsPlugin) {
 		super(app, plugin);
-		this.plugin = plugin;
 	}
 
 	display(): void {
-		const {containerEl} = this;
-
+		const { containerEl } = this;
 		containerEl.empty();
+		containerEl.createEl('h2', { text: 'Bases Views' });
 
 		new Setting(containerEl)
-			.setName('Settings #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
+			.setName('Touch drag hold (ms)')
+			.setDesc('How long a touch must stay still before a card drag starts on mobile.')
+			.addSlider((s) =>
+				s.setLimits(100, 800, 50)
+					.setValue(this.plugin.settings.touchDragHoldMs)
+					.setDynamicTooltip()
+					.onChange(async (v) => {
+						this.plugin.settings.touchDragHoldMs = v;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Hover preview on modifier')
+			.setDesc('Show Obsidian\'s native page preview when hovering a card while holding Ctrl / ⌘.')
+			.addToggle((t) =>
+				t.setValue(this.plugin.settings.hoverPreviewOnModifier).onChange(async (v) => {
+					this.plugin.settings.hoverPreviewOnModifier = v;
 					await this.plugin.saveSettings();
-				}));
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName('Body search cache size')
+			.setDesc('Maximum number of note bodies cached for full-text search (higher = more memory).')
+			.addSlider((s) =>
+				s.setLimits(10, 200, 10)
+					.setValue(this.plugin.settings.bodySearchCacheSize)
+					.setDynamicTooltip()
+					.onChange(async (v) => {
+						this.plugin.settings.bodySearchCacheSize = v;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Restore defaults')
+			.addButton((b) =>
+				b.setButtonText('Restore').onClick(async () => {
+					Object.assign(this.plugin.settings, DEFAULT_SETTINGS);
+					await this.plugin.saveSettings();
+					this.display();
+				}),
+			);
 	}
 }
