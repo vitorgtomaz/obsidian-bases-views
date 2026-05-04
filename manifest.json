@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
-	"version": "1.0.0",
-	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"id": "bases-views",
+	"name": "Bases Views",
+	"version": "0.1.0",
+	"minAppVersion": "1.10.0",
+	"description": "Adds rich visualizations (Kanban, and more to come) as custom view types for Obsidian Bases.",
+	"author": "Vitor Tomaz",
+	"authorUrl": "https://github.com/vitorgtomaz",
 	"isDesktopOnly": false
 }

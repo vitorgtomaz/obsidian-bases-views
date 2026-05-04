@@ -1,99 +1,61 @@
-import {App, Editor, MarkdownView, Modal, Notice, Plugin} from 'obsidian';
-import {DEFAULT_SETTINGS, MyPluginSettings, SampleSettingTab} from "./settings";
+/**
+ * Plugin entry point. Keep this file minimal: lifecycle + view registration only.
+ *
+ * Responsibilities:
+ *  - Load settings.
+ *  - Register every view type via Plugin.registerBasesView. Each call returns
+ *    `false` if the core Bases plugin isn't enabled — in that case, surface a
+ *    single Notice and bail (do NOT throw; the user may enable Bases later and
+ *    re-enable our plugin).
+ *  - Mount the settings tab.
+ *  - Cleanly tear down on unload (most listeners are auto-cleaned via the
+ *    Plugin/Component base class; just trust the framework).
+ */
 
-// Remember to rename these classes and interfaces!
+import { Notice, Plugin } from 'obsidian';
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
+import { DEFAULT_SETTINGS, BasesViewsSettings, BasesViewsSettingTab } from './settings';
+import { KanbanView, KANBAN_VIEW_ID } from './views/kanban/kanban-view';
+import { kanbanOptionsSchema } from './views/kanban/kanban-options';
+import { kanbanIcon } from './views/kanban/kanban-view';
 
-	async onload() {
+export default class BasesViewsPlugin extends Plugin {
+	settings!: BasesViewsSettings;
+
+	async onload(): Promise<void> {
 		await this.loadSettings();
 
-		// This creates an icon in the left ribbon.
-		this.addRibbonIcon('dice', 'Sample', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
+		// Register the Kanban view. Add future view types in the same shape.
+		const kanbanRegistered = this.registerBasesView(KANBAN_VIEW_ID, {
+			name: 'Kanban',
+			icon: kanbanIcon,
+			factory: (controller, containerEl) => new KanbanView(controller, containerEl, this),
+			options: kanbanOptionsSchema,
 		});
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status bar text');
+		if (!kanbanRegistered) {
+			// Bases core plugin is disabled; show a friendly notice and stop.
+			// Settings tab still mounts so the user has a place to learn why.
+			new Notice('Bases Views: enable the core Bases plugin to use these views.', 8_000);
+		}
 
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-modal-simple',
-			name: 'Open modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'replace-selected',
-			name: 'Replace selected content',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				editor.replaceSelection('Sample editor command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-modal-complex',
-			name: 'Open modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-				return false;
-			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			new Notice("Click");
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-
+		this.addSettingTab(new BasesViewsSettingTab(this.app, this));
 	}
 
-	onunload() {
+	onunload(): void {
+		// Nothing to do: Bases unregisters our views automatically; Component
+		// children clean up via this.register* hooks.
 	}
 
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData() as Partial<MyPluginSettings>);
+	async loadSettings(): Promise<void> {
+		this.settings = Object.assign(
+			{},
+			DEFAULT_SETTINGS,
+			(await this.loadData()) as Partial<BasesViewsSettings>,
+		);
 	}
 
-	async saveSettings() {
+	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		let {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
 	}
 }
