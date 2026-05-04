@@ -86,29 +86,31 @@ export class KanbanView extends AbstractView<KanbanConfig> {
 			viewId: this.type,
 		});
 
-		if (!groupBy) {
-			this.showError(new Error('No suitable group-by property found. Set "Group by" in view options.'));
-			return;
-		}
 		this.currentGroupBy = groupBy;
 
 		// Build card layout
 		const cardLayout: CardLayout = config.card ?? autoCardLayout({
 			entries,
 			descriptors,
-			excludeProperties: [groupBy],
+			excludeProperties: groupBy ? [groupBy] : [],
 		});
 
-		// Bucket entries by group-by value
+		// Bucket entries by group-by value, or into a single "All" column when
+		// no group-by is configured / auto-detected — so cards still render and
+		// the user can pick a Group by from view options.
 		const buckets = new Map<string, ViewEntry[]>();
-		for (const e of entries) {
-			const raw = e.properties[groupBy];
-			const keys = Array.isArray(raw)
-				? raw.length > 0 ? [String(raw[0])] : ['']
-				: [raw != null ? String(raw) : ''];
-			for (const k of keys) {
-				if (!buckets.has(k)) buckets.set(k, []);
-				buckets.get(k)!.push(e);
+		if (!groupBy) {
+			buckets.set('All', [...entries]);
+		} else {
+			for (const e of entries) {
+				const raw = e.properties[groupBy];
+				const keys = Array.isArray(raw)
+					? raw.length > 0 ? [String(raw[0])] : ['']
+					: [raw != null ? String(raw) : ''];
+				for (const k of keys) {
+					if (!buckets.has(k)) buckets.set(k, []);
+					buckets.get(k)!.push(e);
+				}
 			}
 		}
 
