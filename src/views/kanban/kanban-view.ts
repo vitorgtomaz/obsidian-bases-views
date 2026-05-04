@@ -10,8 +10,8 @@ import { registerBuiltins } from '../../ui/card/renderers';
 import { autoCardLayout } from '../../ui/card/auto-layout';
 import { DragController } from '../../ui/dnd/drag-controller';
 import { attachHoverPreview } from '../../ui/hover-preview';
+import { GroupByButton } from '../../ui/group-by-button';
 import { KanbanColumn } from './kanban-column';
-import { pickGroupBy } from './auto-group-by';
 import { KANBAN_DEFAULTS, kanbanOptionsSchema, type KanbanConfig } from './kanban-options';
 
 export const KANBAN_VIEW_ID = 'bases-views.kanban';
@@ -26,6 +26,7 @@ export class KanbanView extends AbstractView<KanbanConfig> {
 	private dnd!: DragController;
 	private columns = new Map<string, KanbanColumn>();
 	private currentGroupBy: string | null = null;
+	private groupByBtn!: GroupByButton;
 	private hoverCleanups: Array<() => void> = [];
 	private dndCleanups: Array<() => void> = [];
 
@@ -48,12 +49,26 @@ export class KanbanView extends AbstractView<KanbanConfig> {
 			scrollMaxPerFrame: 12,
 		});
 
+		this.groupByBtn = new GroupByButton({
+			filter: (d) => d.id.startsWith('note.') || d.id.startsWith('formula.'),
+			onChange: (propId) => {
+				this.saveConfig({ groupBy: propId ?? '' } as Partial<KanbanConfig>);
+				this.requestRender();
+			},
+		});
+		this.groupByBtn.mount(this.toolbarEl);
+
 		// Board container scrolls horizontally
 		this.bodyEl.style.overflowX = 'auto';
 		this.bodyEl.style.display = 'flex';
 		this.bodyEl.style.flexDirection = 'row';
 		this.bodyEl.style.gap = '12px';
 		this.bodyEl.style.padding = '12px';
+	}
+
+	override onunload(): void {
+		this.groupByBtn?.unmount();
+		super.onunload();
 	}
 
 	protected render(
@@ -73,20 +88,18 @@ export class KanbanView extends AbstractView<KanbanConfig> {
 			source: this.type,
 		});
 
-		// Resolve group-by
-		const savedGroupBy = config.groupBy
-			? this.config.getAsPropertyId(config.groupBy)?.split?.('.').slice(1).join('.')
-				?? config.groupBy
+		// Resolve group-by from saved config only — no auto-detection. The
+		// user picks a property via the toolbar's "Group by" button.
+		const savedPropId = config.groupBy
+			? this.config.getAsPropertyId(config.groupBy) ?? config.groupBy
+			: null;
+		const groupBy = savedPropId
+			? savedPropId.split('.').slice(1).join('.') || null
 			: null;
 
-		const groupBy = savedGroupBy ?? pickGroupBy({
-			descriptors,
-			entries: [...entries],
-			basePath: this.app.workspace.getActiveFile()?.path ?? '',
-			viewId: this.type,
-		});
-
 		this.currentGroupBy = groupBy;
+		this.groupByBtn?.setProperties(descriptors);
+		this.groupByBtn?.setSelection(savedPropId);
 
 		// Build card layout
 		const cardLayout: CardLayout = config.card ?? autoCardLayout({
@@ -96,8 +109,7 @@ export class KanbanView extends AbstractView<KanbanConfig> {
 		});
 
 		// Bucket entries by group-by value, or into a single "All" column when
-		// no group-by is configured / auto-detected — so cards still render and
-		// the user can pick a Group by from view options.
+		// no group-by is configured — the user picks one from the toolbar.
 		const buckets = new Map<string, ViewEntry[]>();
 		if (!groupBy) {
 			buckets.set('All', [...entries]);

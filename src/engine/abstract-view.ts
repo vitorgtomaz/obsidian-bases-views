@@ -147,6 +147,11 @@ export abstract class AbstractView<TConfig extends object> extends BasesView {
 		}
 	}
 
+	/** Re-run the render pipeline against the last data snapshot. */
+	protected requestRender(): void {
+		this.tick();
+	}
+
 	protected showError(err: unknown): void {
 		this.errorEl.empty();
 		this.errorEl.show();
