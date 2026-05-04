@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-bases-views",
-	"version": "0.1.2",
+	"version": "0.1.3",
 	"description": "Adds rich visualizations (Kanban, and more) as custom view types for Obsidian Bases.",
 	"main": "main.js",
 	"type": "module",
