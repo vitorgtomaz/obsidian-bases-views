@@ -78,8 +78,9 @@ export abstract class AbstractView<TConfig extends object> extends BasesView {
 		});
 		this.searchBox.mount(this.toolbarEl);
 
-		// First render
-		this.tick();
+		// Defer first render so subclass onload() can finish initializing
+		// fields (e.g. DragController) before render() runs.
+		queueMicrotask(() => this.tick());
 	}
 
 	override onunload(): void {
