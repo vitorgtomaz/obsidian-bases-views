@@ -1,59 +1,99 @@
 /**
- * FilterPanel — chip-based filter UI shown in the toolbar's filter button popover.
+ * FilterPanel — simple chip-based filter popover.
  *
- * Reusable across all views.  Round-trips into Bases' native filters block so
- * filters are also visible/editable in the table view.
+ * v1 scope: property-equals and folder-filter chips. The Bases-native filter
+ * round-trip is a v1.1 concern; for now filters are applied in-memory and
+ * visible only inside this view.
  */
 
-import type { App } from 'obsidian';
-import type { FilterClause, FilterState, PropertyDescriptor } from '../types';
+import type { PropertyDescriptor } from '../types';
+
+export interface FilterChip {
+	property: string;
+	value: string;
+}
 
 export interface FilterPanelOptions {
-	app: App;
 	properties: readonly PropertyDescriptor[];
-	state: FilterState;
-	onChange: (next: FilterState) => void;
-	/** Called when user clicks "save into .base"; FilterPanel doesn't write itself. */
-	onPersist?: (next: FilterState) => Promise<void>;
+	chips: FilterChip[];
+	onChange: (chips: FilterChip[]) => void;
 }
 
 export class FilterPanel {
 	private rootEl: HTMLElement | null = null;
 
-	constructor(private readonly opts: FilterPanelOptions) {}
+	constructor(private opts: FilterPanelOptions) {}
 
-	/**
-	 * Mount the popover anchored under `anchorEl`.
-	 *
-	 * UX:
-	 *   - Header: "Filters" + a "+ Add filter" button.
-	 *   - Each clause renders as a chip: [property ▾] [op ▾] [value ▾] [✕]
-	 *   - Property dropdown lists this.opts.properties, grouped by type.
-	 *   - Op dropdown shows only ops valid for the property's type
-	 *     (string→eq/contains, list→has/notHas, number→eq/between, …)
-	 *   - Value editor depends on type:
-	 *       string: text input
-	 *       enum/list: multi-select using property's enumValues
-	 *       date: date picker
-	 *       number: numeric input or two-input range for between
-	 *   - Footer: "Apply locally" (calls onChange only) and
-	 *             "Save to .base" (calls onPersist).
-	 *
-	 * Use Obsidian's Menu for dropdowns when possible; otherwise raw <select>.
-	 */
 	mount(anchorEl: HTMLElement): void {
-		throw new Error('not implemented');
+		this.close();
+		const panel = document.createElement('div');
+		panel.className = 'bv-filter-panel';
+
+		const header = panel.createDiv('bv-filter-header');
+		header.createEl('strong', { text: 'Filters' });
+
+		const chipList = panel.createDiv('bv-filter-chips');
+		this.renderChips(chipList);
+
+		// Add filter row
+		const addRow = panel.createDiv('bv-filter-add-row');
+		const propSel = addRow.createEl('select', { cls: 'bv-filter-prop-select' });
+		propSel.createEl('option', { value: '', text: 'Property…' });
+		for (const d of this.opts.properties) {
+			propSel.createEl('option', { value: d.key, text: d.key });
+		}
+		const valInput = addRow.createEl('input', { type: 'text', cls: 'bv-filter-val-input', attr: { placeholder: 'Value…' } });
+		const addBtn = addRow.createEl('button', { cls: 'bv-filter-add-btn', text: 'Add' });
+		addBtn.onclick = () => {
+			if (!propSel.value || !valInput.value.trim()) return;
+			const next = [...this.opts.chips, { property: propSel.value, value: valInput.value.trim() }];
+			this.opts.chips = next;
+			this.opts.onChange(next);
+			propSel.value = '';
+			valInput.value = '';
+			this.renderChips(chipList);
+		};
+
+		// Position below anchor
+		const rect = anchorEl.getBoundingClientRect();
+		panel.style.position = 'fixed';
+		panel.style.top = `${rect.bottom + 4}px`;
+		panel.style.left = `${rect.left}px`;
+		panel.style.zIndex = '1000';
+
+		document.body.appendChild(panel);
+		this.rootEl = panel;
+
+		// Dismiss on click outside
+		const dismiss = (ev: MouseEvent) => {
+			if (!panel.contains(ev.target as Node)) {
+				this.close();
+				document.removeEventListener('mousedown', dismiss);
+			}
+		};
+		setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
+	}
+
+	private renderChips(chipList: HTMLElement): void {
+		chipList.empty();
+		for (let i = 0; i < this.opts.chips.length; i++) {
+			const chip = this.opts.chips[i];
+			if (!chip) continue;
+			const chipEl = chipList.createDiv('bv-filter-chip');
+			chipEl.createSpan({ text: `${chip.property} = ${chip.value}` });
+			const remove = chipEl.createEl('button', { text: '✕', cls: 'bv-filter-chip-remove' });
+			const idx = i;
+			remove.onclick = () => {
+				const next = this.opts.chips.filter((_, j) => j !== idx);
+				this.opts.chips = next;
+				this.opts.onChange(next);
+				this.renderChips(chipList);
+			};
+		}
 	}
 
 	close(): void {
-		// Detach rootEl from DOM, null it out.
-		throw new Error('not implemented');
-	}
-
-	/* ---- internal helpers ---- */
-
-	/** Validate ops available for a given property type. */
-	private opsForType(t: PropertyDescriptor['type']): FilterClause['op'][] {
-		throw new Error('not implemented');
+		this.rootEl?.detach();
+		this.rootEl = null;
 	}
 }

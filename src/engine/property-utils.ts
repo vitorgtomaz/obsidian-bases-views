@@ -1,118 +1,107 @@
 /**
- * Property-type detection, value coercion, and group-by inference.
- *
- * Pure functions — easy to unit test and reuse across views.
+ * Pure property utilities: type detection, value coercion, search, group-by ranking.
  */
 
-import type {
-	FilterClause,
-	PropertyDescriptor,
-	PropertyType,
-	ViewEntry,
-} from '../types';
+import type { PropertyDescriptor, PropertyType, ViewEntry } from '../types';
 
 /* ------------------------------------------------------------------ */
-/*  Type detection                                                     */
+/*  Runtime type detection for plain JS values (post-normalisation)    */
 /* ------------------------------------------------------------------ */
 
-/** Best-effort runtime type detection for a single value. */
+const IMG_EXT_RX = /\.(png|jpe?g|webp|gif|svg|avif)(\?|#|$)/i;
+const ISO_DATE_RX = /^\d{4}-\d{2}-\d{2}(T|$)/;
+const URL_RX = /^https?:\/\//i;
+const WIKILINK_RX = /^\[\[/;
+const MD_LINK_RX = /^\[.+\]\(.+\)/;
+
 export function detectType(value: unknown): PropertyType {
-	// Order matters; check most specific first.
-	//   null/undefined → 'unknown'
-	//   boolean → 'boolean'
-	//   number → 'number'
-	//   Array → 'list' (consider 'tags' if every element is a string starting with '#')
-	//   Date instance → 'datetime'
-	//   string:
-	//     - matches ISO date YYYY-MM-DD                    → 'date'
-	//     - matches ISO datetime                            → 'datetime'
-	//     - matches markdown image  ![](…) or image url    → 'image'
-	//     - matches wikilink [[…]] or markdown link [..](.) → 'link'
-	//     - else                                            → 'string'
-	//   object → 'unknown'
-	throw new Error('not implemented');
-}
-
-/** Resolve a PropertyDescriptor against a sample of values across entries. */
-export function inferDescriptor(
-	key: string,
-	entries: readonly ViewEntry[],
-): PropertyDescriptor {
-	// Walk up to N entries (e.g. 200), call detectType on entry.properties[key],
-	// pick the most frequent non-'unknown' type. Distinct values < 30 with type
-	// 'string' → consider it an enum (return enumValues sorted).
-	throw new Error('not implemented');
+	if (value === null || value === undefined) return 'unknown';
+	if (typeof value === 'boolean') return 'boolean';
+	if (typeof value === 'number') return 'number';
+	if (Array.isArray(value)) {
+		const allStrings = value.every((v) => typeof v === 'string');
+		if (allStrings && value.every((v: string) => v.startsWith('#'))) return 'tags';
+		return 'list';
+	}
+	if (typeof value === 'string') {
+		if (ISO_DATE_RX.test(value)) return 'date';
+		if (IMG_EXT_RX.test(value)) return 'image';
+		if (WIKILINK_RX.test(value) || MD_LINK_RX.test(value) || URL_RX.test(value)) return 'link';
+		return 'string';
+	}
+	return 'unknown';
 }
 
 /* ------------------------------------------------------------------ */
-/*  Coercion                                                           */
+/*  Search filtering                                                   */
 /* ------------------------------------------------------------------ */
 
-/**
- * Coerce raw value to a stable JS form for comparisons & rendering.
- *  - dates → ISO string
- *  - tags → array of strings without leading '#'
- *  - numbers → Number()
- *  - lists → array (wrap scalar)
- */
-export function coerce(value: unknown, type: PropertyType): unknown {
-	throw new Error('not implemented');
-}
-
-/** Stable, locale-aware comparator for sort/group-by ordering. */
-export function compareValues(a: unknown, b: unknown, type: PropertyType): number {
-	// Empty/null sorts last regardless of direction.
-	// 'date'/'datetime' compare by Date.parse.
-	// 'number' numeric.
-	// 'string' Intl.Collator with { numeric: true, sensitivity: 'base' }.
-	// 'list' compare by JSON.stringify (deterministic, rarely sorted anyway).
-	throw new Error('not implemented');
-}
-
-/* ------------------------------------------------------------------ */
-/*  Filter evaluation                                                  */
-/* ------------------------------------------------------------------ */
-
-/** Evaluate a single FilterClause against a ViewEntry. */
-export function evaluateClause(entry: ViewEntry, clause: FilterClause): boolean {
-	// Pseudocode dispatch table:
-	//   eq/neq/contains/startsWith/endsWith → string ops on coerced value
-	//   in/notIn → Array.includes on coerced value
-	//   has/notHas → for list properties, check element membership
-	//   between → numeric or date range, inclusive
-	//   inFolder → entry.file.path.startsWith(value + '/')
-	//   and/or → recurse on clauses
-	throw new Error('not implemented');
-}
-
-export function evaluateAll(entry: ViewEntry, clauses: readonly FilterClause[]): boolean {
-	// AND together. Empty list → true.
-	throw new Error('not implemented');
+/** Returns true if `entry` matches `term` across the requested scopes. */
+export function matchesSearch(
+	entry: ViewEntry,
+	term: string,
+	scopes: { name: boolean; path: boolean; properties: boolean; body: boolean },
+): boolean {
+	const t = term.toLowerCase();
+	if (scopes.name && entry.displayName.toLowerCase().includes(t)) return true;
+	if (scopes.path && entry.file.path.toLowerCase().includes(t)) return true;
+	if (scopes.properties) {
+		for (const v of Object.values(entry.properties)) {
+			if (v === null || v === undefined) continue;
+			const s = Array.isArray(v) ? v.join(' ') : String(v);
+			if (s.toLowerCase().includes(t)) return true;
+		}
+	}
+	return false;
 }
 
 /* ------------------------------------------------------------------ */
-/*  Group-by inference (used by Kanban auto-pick — see PRD §4.5)       */
+/*  Group-by candidate ranking (PRD §4.5)                              */
 /* ------------------------------------------------------------------ */
+
+const INTERNAL_KEYS = new Set([
+	'position', 'aliases', 'tags-source', 'cssclasses', 'cssclass',
+]);
 
 export interface GroupByCandidate {
 	key: string;
+	propId: string;
 	type: PropertyType;
-	frequency: number; // share of entries that have a non-empty value [0..1]
+	frequency: number;   // share of entries with a non-empty value [0..1]
 	distinctCount: number;
 }
 
-/**
- * Score every property in `descriptors` against `entries` and return the
- * candidates suitable for grouping a Kanban (or any column-style view).
- *
- * Filtering rules:
- *   - type ∈ { 'string', 'list', 'tags' } and 2 ≤ distinctCount ≤ 30
- *   - exclude internal frontmatter keys: 'position', 'aliases', 'tags-source'
- *   - exclude properties with frequency < 0.4 (too sparse)
- */
 export function rankGroupByCandidates(
 	descriptors: readonly PropertyDescriptor[],
 	entries: readonly ViewEntry[],
 ): GroupByCandidate[] {
-	throw new Error('not implemented');
+	if (entries.length === 0) return [];
+
+	const candidates: GroupByCandidate[] = [];
+
+	for (const desc of descriptors) {
+		if (INTERNAL_KEYS.has(desc.key)) continue;
+		// Only string/list/tags types make sense as column headers
+		if (!['string', 'list', 'tags'].includes(desc.type)) continue;
+
+		const values = entries.map((e) => e.properties[desc.key]);
+		const nonEmpty = values.filter(
+			(v) => v !== null && v !== undefined && v !== '' &&
+				!(Array.isArray(v) && v.length === 0),
+		);
+
+		const frequency = nonEmpty.length / entries.length;
+		if (frequency < 0.4) continue; // too sparse
+
+		// Flatten lists to collect distinct scalar values
+		const scalars = nonEmpty.flatMap((v) => (Array.isArray(v) ? v : [v]));
+		const distinct = new Set(scalars.map(String));
+		const distinctCount = distinct.size;
+
+		if (distinctCount < 2 || distinctCount > 30) continue;
+
+		candidates.push({ key: desc.key, propId: desc.id, type: desc.type, frequency, distinctCount });
+	}
+
+	return candidates.sort((a, b) => b.frequency - a.frequency);
 }

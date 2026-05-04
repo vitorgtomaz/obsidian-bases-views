@@ -1,15 +1,5 @@
-/**
- * SearchBox — live-typed search bar shown in the toolbar.
- *
- * Behaviour:
- *  - Toggled by the search button: collapsed (icon) → expanded (input).
- *  - Live filters via onChange (debounced 80 ms).
- *  - Body-content scope is opt-in (cog menu inside the box).
- *  - Esc clears and collapses.
- *  - Result count chip on the right ("12 / 134 visible") — updated by caller.
- */
-
 import type { SearchState } from '../types';
+import { debounce } from '../utils/debounce';
 
 export interface SearchBoxOptions {
 	state: SearchState;
@@ -18,34 +8,72 @@ export interface SearchBoxOptions {
 }
 
 export class SearchBox {
+	private rootEl: HTMLElement | null = null;
 	private inputEl!: HTMLInputElement;
 	private countEl!: HTMLElement;
-	private rootEl: HTMLElement | null = null;
+	private state: SearchState;
+	private readonly onChangedDebounced: (next: SearchState) => void;
 
-	constructor(private readonly opts: SearchBoxOptions) {}
+	constructor(private readonly opts: SearchBoxOptions) {
+		this.state = { ...opts.state };
+		this.onChangedDebounced = debounce(opts.onChange, opts.debounceMs ?? 80);
+	}
 
-	/** Append the search bar root to `parentEl`. Returns the root for layout. */
 	mount(parentEl: HTMLElement): HTMLElement {
-		// 1. Create wrapper, input, scope-cog button, count chip.
-		// 2. Wire input.oninput → debounced this.opts.onChange({ ...state, term })
-		// 3. Wire Esc to clear + emit + collapse.
-		// 4. Cog opens an Obsidian Menu with toggles for name/path/properties/body.
-		// 5. Return rootEl.
-		throw new Error('not implemented');
+		this.rootEl = parentEl.createDiv('bv-search-box');
+
+		// Search icon button (toggles expanded)
+		const iconBtn = this.rootEl.createEl('button', { cls: 'bv-search-icon clickable-icon', attr: { 'aria-label': 'Search' } });
+		iconBtn.innerHTML = '&#128269;';
+
+		// Input (hidden by default)
+		const inputWrap = this.rootEl.createDiv('bv-search-input-wrap');
+		inputWrap.style.display = 'none';
+
+		this.inputEl = inputWrap.createEl('input', { type: 'text', cls: 'bv-search-input', attr: { placeholder: 'Search…' } });
+		this.countEl = inputWrap.createSpan({ cls: 'bv-search-count', text: '' });
+
+		const clearBtn = inputWrap.createEl('button', { cls: 'bv-search-clear clickable-icon', text: '✕' });
+
+		// Toggle
+		iconBtn.onclick = () => {
+			const hidden = inputWrap.style.display === 'none';
+			inputWrap.style.display = hidden ? 'flex' : 'none';
+			if (hidden) this.inputEl.focus();
+		};
+
+		// Live search
+		this.inputEl.oninput = () => {
+			this.state = { ...this.state, term: this.inputEl.value };
+			this.onChangedDebounced(this.state);
+		};
+
+		// Esc clears and collapses
+		this.inputEl.onkeydown = (ev) => {
+			if (ev.key === 'Escape') {
+				this.clear();
+				inputWrap.style.display = 'none';
+			}
+		};
+
+		clearBtn.onclick = () => this.clear();
+
+		return this.rootEl;
 	}
 
-	/** Update the "12 / 134" count without re-rendering anything else. */
 	setCount(visible: number, total: number): void {
-		throw new Error('not implemented');
+		if (!this.countEl) return;
+		this.countEl.setText(visible < total ? `${visible} / ${total}` : '');
 	}
 
-	/** Programmatic clear (used by the toolbar when user clicks X icon). */
 	clear(): void {
-		throw new Error('not implemented');
+		if (this.inputEl) this.inputEl.value = '';
+		this.state = { ...this.state, term: '' };
+		this.opts.onChange(this.state);
 	}
 
 	unmount(): void {
-		// Detach root, drop refs.
-		throw new Error('not implemented');
+		this.rootEl?.detach();
+		this.rootEl = null;
 	}
 }

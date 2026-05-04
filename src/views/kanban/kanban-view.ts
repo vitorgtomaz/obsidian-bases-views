@@ -1,27 +1,8 @@
-/**
- * KanbanView — the registered Bases view type.
- *
- * Subclasses AbstractView and implements the column-board render loop.
- *
- * Hot path on every tick:
- *   1. Determine effective groupBy (config.groupBy ?? auto-pick).
- *   2. Determine effective card layout (config.card ?? autoCardLayout).
- *   3. Bucket entries by groupBy value, applying columnOrder + hiddenColumns.
- *   4. For each column: create-or-update a KanbanColumn instance, then call
- *      setEntries.
- *   5. Diff: destroy columns that disappeared, append new ones in order.
- */
-
-import type { App, FrontMatterCache } from 'obsidian';
+import type { QueryController } from 'obsidian';
 
 import type BasesViewsPlugin from '../../main';
-import type {
-	OptionConfig,
-	PropertyDescriptor,
-	QueryController,
-	ViewEntry,
-} from '../../types';
-import { AbstractView, type BaseViewConfig } from '../../engine/abstract-view';
+import type { CardLayout, PropertyDescriptor, ViewEntry } from '../../types';
+import { AbstractView } from '../../engine/abstract-view';
 import { FrontmatterWriter } from '../../engine/frontmatter-writer';
 import { CardComposer } from '../../ui/card/composer';
 import { RendererRegistry } from '../../ui/card/renderer-registry';
@@ -31,32 +12,22 @@ import { DragController } from '../../ui/dnd/drag-controller';
 import { attachHoverPreview } from '../../ui/hover-preview';
 import { KanbanColumn } from './kanban-column';
 import { pickGroupBy } from './auto-group-by';
-import {
-	KANBAN_DEFAULTS,
-	kanbanOptionsSchema,
-	type KanbanConfig,
-} from './kanban-options';
+import { KANBAN_DEFAULTS, kanbanOptionsSchema, type KanbanConfig } from './kanban-options';
 
-/** Stable id for registerBasesView. Do NOT change after release (PRD §2). */
 export const KANBAN_VIEW_ID = 'bases-views.kanban';
-
-/** Lucide icon name for the view-type dropdown in Bases. */
 export const kanbanIcon = 'layout-kanban';
 
-interface KanbanFullConfig extends BaseViewConfig, KanbanConfig {}
-
-export class KanbanView extends AbstractView<KanbanFullConfig> {
-	readonly viewId = KANBAN_VIEW_ID;
+export class KanbanView extends AbstractView<KanbanConfig> {
+	readonly type = KANBAN_VIEW_ID;
 
 	private readonly registry = new RendererRegistry();
 	private composer!: CardComposer;
 	private writer: FrontmatterWriter;
 	private dnd!: DragController;
-
-	/** Keyed by column value. */
 	private columns = new Map<string, KanbanColumn>();
-	/** Track effective groupBy for the current tick (for onDrop). */
 	private currentGroupBy: string | null = null;
+	private hoverCleanups: Array<() => void> = [];
+	private dndCleanups: Array<() => void> = [];
 
 	constructor(controller: QueryController, containerEl: HTMLElement, plugin: BasesViewsPlugin) {
 		super(controller, containerEl, plugin);
@@ -64,108 +35,179 @@ export class KanbanView extends AbstractView<KanbanFullConfig> {
 		registerBuiltins(this.registry);
 	}
 
-	defaultConfig(): KanbanFullConfig {
+	defaultConfig(): KanbanConfig {
 		return { ...KANBAN_DEFAULTS };
 	}
 
-	optionsSchema(): OptionConfig[] {
-		return kanbanOptionsSchema();
-	}
-
 	override onload(): void {
-		// 1. super.onload-equivalent: build toolbar + body. AbstractView does
-		//    the shared toolbar; we extend body with horizontal column scroll.
-		// 2. Mount the DragController on this.bodyEl with options pulled from
-		//    plugin settings (touchHoldMs etc).
-		// 3. Build the CardComposer with this.registry and a descriptors map
-		//    derived from this.adapter.properties().
-		// 4. Subscribe to data updates (already wired by AbstractView).
-		throw new Error('not implemented');
+		super.onload();
+
+		this.dnd = new DragController(this.bodyEl, {
+			touchHoldMs: this.plugin.settings.touchDragHoldMs,
+			scrollEdge: 60,
+			scrollMaxPerFrame: 12,
+		});
+
+		// Board container scrolls horizontally
+		this.bodyEl.style.overflowX = 'auto';
+		this.bodyEl.style.display = 'flex';
+		this.bodyEl.style.flexDirection = 'row';
+		this.bodyEl.style.gap = '12px';
+		this.bodyEl.style.padding = '12px';
 	}
 
 	protected render(
 		entries: readonly ViewEntry[],
-		config: KanbanFullConfig,
+		config: KanbanConfig,
 		container: HTMLElement,
 	): void {
-		// Step-by-step (see PRD §4.4):
-		//
-		//   const descriptors = this.properties
-		//   const groupBy = config.groupBy ?? pickGroupBy({
-		//     descriptors, entries, basePath: this.adapter.getBasePath?.() ?? '', viewId: this.viewId,
-		//   })
-		//   if (!groupBy) {
-		//     this.showError(new Error('No suitable property to group by — set Group by in view options.'))
-		//     return
-		//   }
-		//   this.currentGroupBy = groupBy
-		//
-		//   const layout = config.card ?? autoCardLayout({
-		//     entries, descriptors, excludeProperties: [groupBy],
-		//   })
-		//
-		//   // Bucket entries by group value
-		//   const buckets = new Map<string, ViewEntry[]>()
-		//   for (const e of entries) {
-		//     const v = e.properties[groupBy]
-		//     // Lists/tags: a card belongs to multiple columns. v1 chooses the FIRST
-		//     // value to keep mental model simple; configurable later.
-		//     const key = Array.isArray(v) ? (v[0] ?? '') : v ?? ''
-		//     const k = String(key)
-		//     ;(buckets.get(k) ?? buckets.set(k, []).get(k))!.push(e)
-		//   }
-		//
-		//   const ordered = mergeOrder(config.columnOrder, [...buckets.keys()])
-		//     .filter(k => !(config.hiddenColumns ?? []).includes(k))
-		//
-		//   // Diff existing column DOM against `ordered`:
-		//   //   - destroy columns whose key is no longer present
-		//   //   - create columns for new keys (mount under container)
-		//   //   - reorder DOM children to match `ordered`
-		//   //   - call column.setEntries(buckets.get(k) ?? [])
-		//
-		//   // Card render closure — passed into each KanbanColumn:
-		//   const renderCard = (entry, recycled) => {
-		//     const cardEl = this.composer.compose(
-		//       entry, layout,
-		//       { app: this.plugin.app, source: this.viewId },
-		//       recycled,
-		//     )
-		//     this.wireCard(cardEl, entry)
-		//     this.dnd.registerDraggable({ el: cardEl, payload: entry.file.path })
-		//     return cardEl
-		//   }
-		throw new Error('not implemented');
+		const descriptors = this.properties;
+		const descriptorMap = new Map<string, PropertyDescriptor>(
+			descriptors.map((d) => [d.key, d]),
+		);
+
+		// Rebuild composer when descriptors change (cheap map rebuild)
+		this.composer = new CardComposer({
+			registry: this.registry,
+			descriptors: descriptorMap,
+			source: this.type,
+		});
+
+		// Resolve group-by
+		const savedGroupBy = config.groupBy
+			? this.config.getAsPropertyId(config.groupBy)?.split?.('.').slice(1).join('.')
+				?? config.groupBy
+			: null;
+
+		const groupBy = savedGroupBy ?? pickGroupBy({
+			descriptors,
+			entries: [...entries],
+			basePath: this.app.workspace.getActiveFile()?.path ?? '',
+			viewId: this.type,
+		});
+
+		if (!groupBy) {
+			this.showError(new Error('No suitable group-by property found. Set "Group by" in view options.'));
+			return;
+		}
+		this.currentGroupBy = groupBy;
+
+		// Build card layout
+		const cardLayout: CardLayout = config.card ?? autoCardLayout({
+			entries,
+			descriptors,
+			excludeProperties: [groupBy],
+		});
+
+		// Bucket entries by group-by value
+		const buckets = new Map<string, ViewEntry[]>();
+		for (const e of entries) {
+			const raw = e.properties[groupBy];
+			const keys = Array.isArray(raw)
+				? raw.length > 0 ? [String(raw[0])] : ['']
+				: [raw != null ? String(raw) : ''];
+			for (const k of keys) {
+				if (!buckets.has(k)) buckets.set(k, []);
+				buckets.get(k)!.push(e);
+			}
+		}
+
+		const ordered = mergeOrder(config.columnOrder, [...buckets.keys()])
+			.filter((k) => !(config.hiddenColumns ?? []).includes(k));
+
+		// Clean up old hover/dnd registrations
+		for (const c of this.hoverCleanups) c();
+		this.hoverCleanups = [];
+		for (const c of this.dndCleanups) c();
+		this.dndCleanups = [];
+
+		// Destroy removed columns
+		for (const [key, col] of this.columns) {
+			if (!ordered.includes(key)) {
+				col.unmount();
+				this.columns.delete(key);
+			}
+		}
+
+		// Create / update columns
+		for (const key of ordered) {
+			let col = this.columns.get(key);
+			if (!col) {
+				col = new KanbanColumn({
+					value: key,
+					label: key || '(empty)',
+					dnd: this.dnd,
+					renderCard: (entry, recycled) => this.renderCard(entry, cardLayout, recycled),
+					onCardDropped: (path) => this.onCardDropped(path, key),
+					showCount: config.showColumnCounts ?? true,
+				});
+				col.mount(container);
+				this.columns.set(key, col);
+			}
+			col.setEntries(buckets.get(key) ?? []);
+		}
+
+		// Ensure DOM order matches `ordered`
+		for (const key of ordered) {
+			const col = this.columns.get(key);
+			if (col) container.appendChild(col.rootEl);
+		}
 	}
 
-	/** Wire click + hover-preview handlers onto a card element. */
-	private wireCard(cardEl: HTMLElement, entry: ViewEntry): void {
-		// click → openLinkText with newLeaf=true
-		// attachHoverPreview gated by plugin.settings.hoverPreviewOnModifier
-		throw new Error('not implemented');
+	private renderCard(
+		entry: ViewEntry,
+		layout: CardLayout,
+		recycled: HTMLElement | null,
+	): HTMLElement {
+		const cardEl = this.composer.compose(
+			entry,
+			layout,
+			{ app: this.app, source: this.type },
+			recycled,
+		);
+
+		// Click → open file in new pane
+		cardEl.onclick = (ev) => {
+			ev.stopPropagation();
+			this.app.workspace.openLinkText(entry.file.path, '', true);
+		};
+
+		// Hover preview
+		if (this.plugin.settings.hoverPreviewOnModifier) {
+			const cleanup = attachHoverPreview(this.app, cardEl, entry.file, {
+				source: this.type,
+				requireModifier: true,
+			});
+			this.hoverCleanups.push(cleanup);
+		}
+
+		// Drag registration
+		const cleanupDnd = this.dnd.registerDraggable({
+			el: cardEl,
+			payload: entry.file.path,
+		});
+		this.dndCleanups.push(cleanupDnd);
+
+		return cardEl;
 	}
 
-	/** Called from KanbanColumn.onCardDropped — write new property value. */
 	private async onCardDropped(filePath: string, columnValue: string): Promise<void> {
-		// Pseudocode:
-		//   if (!this.currentGroupBy) return
-		//   const file = this.plugin.app.vault.getFileByPath(filePath)  // null-safe
-		//   if (!file) return
-		//   const desc = this.properties.find(p => p.key === this.currentGroupBy)
-		//   await this.writer.set(file, this.currentGroupBy, columnValue, desc?.type)
-		//   // Bases observes the metadata change and emits data-updated; loop closes.
-		throw new Error('not implemented');
+		if (!this.currentGroupBy) return;
+		const file = this.app.vault.getFileByPath(filePath);
+		if (!file) return;
+		const desc = this.properties.find((p) => p.key === this.currentGroupBy);
+		await this.writer.set(file, this.currentGroupBy, columnValue, desc?.type);
 	}
 }
 
-/** Merge a saved column order with the actually-encountered keys.
- *  Keys not in `saved` are appended in encounter order. */
 function mergeOrder(saved: readonly string[] | undefined, present: readonly string[]): string[] {
-	// Pseudocode:
-	//   const seen = new Set<string>()
-	//   const out: string[] = []
-	//   for (const k of (saved ?? [])) if (present.includes(k) && !seen.has(k)) { out.push(k); seen.add(k) }
-	//   for (const k of present)        if (!seen.has(k))                        { out.push(k); seen.add(k) }
-	//   return out
-	throw new Error('not implemented');
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const k of saved ?? []) {
+		if (present.includes(k) && !seen.has(k)) { out.push(k); seen.add(k); }
+	}
+	for (const k of present) {
+		if (!seen.has(k)) { out.push(k); seen.add(k); }
+	}
+	return out;
 }

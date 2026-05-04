@@ -1,20 +1,6 @@
-/**
- * Date renderer — localised date / relative-time.
- *
- * Accepts:
- *   - slot.style === 'date'
- *   - propType ∈ {'date', 'datetime'}
- *   - value parses as a valid Date (ISO string or Date)
- *
- * slot.dateFormat:
- *   'short' (default)  → e.g. "May 2, 2026"
- *   'iso'              → "2026-05-02"
- *   'relative'         → "2 days ago" (via Intl.RelativeTimeFormat)
- *   'time'             → "13:28"
- *   'datetime'         → "May 2, 2026, 13:28"
- */
-
 import type { RendererSpec } from '../renderer-registry';
+
+const ISO_RX = /^\d{4}-\d{2}-\d{2}/;
 
 export const dateRenderer: RendererSpec = {
 	id: 'date',
@@ -22,37 +8,46 @@ export const dateRenderer: RendererSpec = {
 	accepts(value, slot, propType) {
 		if (slot.style === 'date') return true;
 		if (propType === 'date' || propType === 'datetime') return true;
-		if (typeof value === 'string') {
-			const t = Date.parse(value);
-			return !Number.isNaN(t) && /^\d{4}-\d{2}-\d{2}/.test(value);
-		}
-		return value instanceof Date;
+		return typeof value === 'string' && ISO_RX.test(value);
 	},
 	render(value, slot, _ctx) {
-		// Pseudocode:
-		//   const d = value instanceof Date ? value : new Date(String(value))
-		//   if (isNaN(d.getTime())) return createDiv('bv-text', { text: String(value ?? '') })
-		//   const fmt = (slot.dateFormat as string) ?? 'short'
-		//   const el = createDiv('bv-date')
-		//   switch fmt:
-		//     'iso'      → el.setText(d.toISOString().slice(0, 10))
-		//     'relative' → el.setText(formatRelative(d))
-		//     'time'     → el.setText(d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }))
-		//     'datetime' → el.setText(d.toLocaleString())
-		//     'short'    → el.setText(d.toLocaleDateString(undefined, { dateStyle: 'medium' }))
-		//   el.title = d.toISOString()  // accessible full date on hover
-		//   return el
-		throw new Error('not implemented');
+		const el = document.createElement('div');
+		el.className = 'bv-date';
+		const d = value instanceof Date ? value : new Date(String(value ?? ''));
+		if (Number.isNaN(d.getTime())) {
+			el.setText(String(value ?? ''));
+			return el;
+		}
+		const fmt = (slot.dateFormat as string) ?? 'short';
+		switch (fmt) {
+			case 'iso':
+				el.setText(d.toISOString().slice(0, 10));
+				break;
+			case 'relative':
+				el.setText(formatRelative(d));
+				break;
+			case 'time':
+				el.setText(d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
+				break;
+			case 'datetime':
+				el.setText(d.toLocaleString());
+				break;
+			default:
+				el.setText(d.toLocaleDateString(undefined, { dateStyle: 'medium' }));
+		}
+		el.title = d.toISOString();
+		return el;
 	},
 };
 
-/** Human-friendly relative time using Intl.RelativeTimeFormat. */
 function formatRelative(d: Date): string {
-	// Pseudocode:
-	//   const diffMs = d.getTime() - Date.now()
-	//   const abs = Math.abs(diffMs)
-	//   pick the largest unit that fits (year, month, week, day, hour, minute)
-	//   const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
-	//   return rtf.format(Math.round(diffMs / unitMs), unit)
-	throw new Error('not implemented');
+	const diffMs = d.getTime() - Date.now();
+	const abs = Math.abs(diffMs);
+	const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+	if (abs < 60_000) return rtf.format(Math.round(diffMs / 1_000), 'second');
+	if (abs < 3_600_000) return rtf.format(Math.round(diffMs / 60_000), 'minute');
+	if (abs < 86_400_000) return rtf.format(Math.round(diffMs / 3_600_000), 'hour');
+	if (abs < 7 * 86_400_000) return rtf.format(Math.round(diffMs / 86_400_000), 'day');
+	if (abs < 30 * 86_400_000) return rtf.format(Math.round(diffMs / 7 * 86_400_000), 'week');
+	return rtf.format(Math.round(diffMs / (30 * 86_400_000)), 'month');
 }

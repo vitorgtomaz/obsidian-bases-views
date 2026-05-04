@@ -1,130 +1,198 @@
-/**
- * DragController — pointer-event based drag and drop.
- *
- * Why custom (vs HTML5 DnD or react-dnd):
- *  - HTML5 DnD doesn't fire on touch on iOS Safari. Pointer Events work
- *    everywhere Obsidian runs (Electron desktop, iOS, Android).
- *  - We need auto-scroll during drag near container edges.
- *  - We want a long-press start on touch but immediate start on mouse.
- *
- * One controller per view. Register draggables and dropzones; controller owns
- * the active drag state.  Designed to be reused by Kanban now and
- * Calendar/Timeline later.
- */
-
 export interface DraggableHandle {
-	/** The element that receives pointerdown — usually a drag handle or whole card. */
 	el: HTMLElement;
-	/** Opaque payload returned in onDrop; usually the entry's file path. */
 	payload: unknown;
-	/** Optional preview override; default is to clone `el`. */
 	makeGhost?: () => HTMLElement;
 }
 
 export interface DropZoneHandle {
 	el: HTMLElement;
-	/** Returns true if this payload may be dropped on this zone. */
 	accepts: (payload: unknown) => boolean;
-	/** Called when the user releases over this zone. */
 	onDrop: (payload: unknown, ev: PointerEvent) => void;
-	/** Optional hover hooks (used to draw the insertion line). */
 	onEnter?: (payload: unknown) => void;
 	onLeave?: () => void;
 }
 
 export interface DragControllerOptions {
-	/** ms a touch must stay still before drag starts. Mouse drags start instantly. */
 	touchHoldMs: number;
-	/** Auto-scroll edge zone in px. */
 	scrollEdge: number;
-	/** Auto-scroll max velocity in px/frame. */
 	scrollMaxPerFrame: number;
 }
 
-export class DragController {
-	private draggables = new WeakMap<HTMLElement, DraggableHandle>();
-	private zones: DropZoneHandle[] = [];
+interface ActiveDrag {
+	handle: DraggableHandle;
+	ghost: HTMLElement;
+	offsetX: number;
+	offsetY: number;
+	hoveredZone: DropZoneHandle | null;
+	scrollRaf: number | null;
+}
 
-	private active: {
-		handle: DraggableHandle;
-		ghost: HTMLElement;
-		offsetX: number;
-		offsetY: number;
-		hoveredZone: DropZoneHandle | null;
-	} | null = null;
+export class DragController {
+	private handles = new Map<HTMLElement, DraggableHandle>();
+	private zones: DropZoneHandle[] = [];
+	private active: ActiveDrag | null = null;
+	private touchTimer: number | null = null;
+	private touchStartX = 0;
+	private touchStartY = 0;
+
+	private boundMove!: (ev: PointerEvent) => void;
+	private boundUp!: (ev: PointerEvent) => void;
+	private boundCancel!: () => void;
 
 	constructor(
 		private readonly root: HTMLElement,
 		private readonly opts: DragControllerOptions,
-	) {}
+	) {
+		this.boundMove = (ev) => this.onPointerMove(ev);
+		this.boundUp = (ev) => this.onPointerUp(ev);
+		this.boundCancel = () => this.onPointerCancel();
+	}
 
-	/* -------------------- registration -------------------- */
-
-	/** Mark `handle.el` as draggable. Returns an unsubscribe. */
 	registerDraggable(handle: DraggableHandle): () => void {
-		// Pseudocode:
-		//   this.draggables.set(handle.el, handle)
-		//   handle.el.addClass('bv-draggable')
-		//   handle.el.style.touchAction = 'none' // only on the handle, not the card
-		//   addEventListener pointerdown -> this.onPointerDown
-		//   return cleanup
-		throw new Error('not implemented');
+		this.handles.set(handle.el, handle);
+		handle.el.addClass('bv-draggable');
+		handle.el.style.touchAction = 'none';
+
+		const onDown = (ev: PointerEvent) => this.onPointerDown(ev, handle);
+		handle.el.addEventListener('pointerdown', onDown);
+		return () => {
+			this.handles.delete(handle.el);
+			handle.el.removeEventListener('pointerdown', onDown);
+		};
 	}
 
 	registerDropZone(zone: DropZoneHandle): () => void {
-		// Push zone, return cleanup that splices it out.
-		throw new Error('not implemented');
+		this.zones.push(zone);
+		return () => {
+			const idx = this.zones.indexOf(zone);
+			if (idx >= 0) this.zones.splice(idx, 1);
+		};
 	}
 
-	/* -------------------- drag pipeline -------------------- */
+	private onPointerDown(ev: PointerEvent, handle: DraggableHandle): void {
+		if (ev.button !== 0 && ev.pointerType === 'mouse') return;
 
-	private onPointerDown(ev: PointerEvent): void {
-		// Pseudocode:
-		//   if ev.button !== 0 && ev.pointerType === 'mouse' return
-		//   const handle = this.draggables.get(ev.currentTarget)
-		//   if (!handle) return
-		//   if pointerType === 'touch':
-		//     start a hold-timer for opts.touchHoldMs
-		//     if pointer moves > 8px before timer fires → cancel (let scroll happen)
-		//     when timer fires → beginDrag(handle, ev) and call ev.preventDefault to
-		//       stop further scroll
-		//   else:
-		//     beginDrag immediately
-		throw new Error('not implemented');
+		if (ev.pointerType === 'touch') {
+			this.touchStartX = ev.clientX;
+			this.touchStartY = ev.clientY;
+			this.touchTimer = window.setTimeout(() => {
+				this.touchTimer = null;
+				this.beginDrag(handle, ev);
+			}, this.opts.touchHoldMs);
+
+			const cancelTouch = (mev: PointerEvent) => {
+				if (Math.abs(mev.clientX - this.touchStartX) > 8 ||
+					Math.abs(mev.clientY - this.touchStartY) > 8) {
+					if (this.touchTimer !== null) {
+						window.clearTimeout(this.touchTimer);
+						this.touchTimer = null;
+					}
+					handle.el.removeEventListener('pointermove', cancelTouch as EventListener);
+				}
+			};
+			handle.el.addEventListener('pointermove', cancelTouch as EventListener, { once: false });
+		} else {
+			this.beginDrag(handle, ev);
+		}
 	}
 
 	private beginDrag(handle: DraggableHandle, ev: PointerEvent): void {
-		// 1. Build ghost: handle.makeGhost?.() ?? handle.el.cloneNode(true) as HTMLElement
-		//    Position fixed; z-index high; pointer-events none; opacity .9
-		// 2. Compute offsetX/Y from element rect & ev.clientX/Y
-		// 3. Set this.active; capture pointer on this.root
-		// 4. Add listeners to this.root: pointermove, pointerup, pointercancel
-		// 5. Source element: add class 'bv-dragging'
-		throw new Error('not implemented');
+		const ghost = handle.makeGhost?.() ?? (handle.el.cloneNode(true) as HTMLElement);
+		ghost.style.position = 'fixed';
+		ghost.style.zIndex = '9999';
+		ghost.style.pointerEvents = 'none';
+		ghost.style.opacity = '0.85';
+		ghost.style.margin = '0';
+		document.body.appendChild(ghost);
+
+		const rect = handle.el.getBoundingClientRect();
+		const offsetX = ev.clientX - rect.left;
+		const offsetY = ev.clientY - rect.top;
+		ghost.style.width = `${rect.width}px`;
+		ghost.style.left = `${ev.clientX - offsetX}px`;
+		ghost.style.top = `${ev.clientY - offsetY}px`;
+
+		handle.el.addClass('bv-dragging');
+
+		this.active = { handle, ghost, offsetX, offsetY, hoveredZone: null, scrollRaf: null };
+
+		this.root.setPointerCapture(ev.pointerId);
+		this.root.addEventListener('pointermove', this.boundMove);
+		this.root.addEventListener('pointerup', this.boundUp);
+		this.root.addEventListener('pointercancel', this.boundCancel);
 	}
 
 	private onPointerMove(ev: PointerEvent): void {
-		// 1. Move ghost via transform: translate(...) (no layout thrash).
-		// 2. Hit-test drop zones via document.elementFromPoint, walk up to find
-		//    the registered zone element. If it differs from this.active.hoveredZone:
-		//      old zone.onLeave(); new zone.onEnter(payload).
-		// 3. Auto-scroll: if pointer is within opts.scrollEdge of the root's
-		//    top/bottom, schedule a rAF that scrolls by velocity proportional
-		//    to closeness, capped at opts.scrollMaxPerFrame.
-		throw new Error('not implemented');
+		if (!this.active) return;
+		const { ghost, offsetX, offsetY, handle } = this.active;
+		ghost.style.left = `${ev.clientX - offsetX}px`;
+		ghost.style.top = `${ev.clientY - offsetY}px`;
+
+		// Hit-test zones
+		ghost.style.display = 'none';
+		const elUnder = document.elementFromPoint(ev.clientX, ev.clientY);
+		ghost.style.display = '';
+
+		let newZone: DropZoneHandle | null = null;
+		if (elUnder) {
+			for (const zone of this.zones) {
+				if (zone.el === elUnder || zone.el.contains(elUnder)) {
+					if (zone.accepts(handle.payload)) { newZone = zone; break; }
+				}
+			}
+		}
+
+		if (newZone !== this.active.hoveredZone) {
+			this.active.hoveredZone?.onLeave?.();
+			newZone?.onEnter?.(handle.payload);
+			this.active.hoveredZone = newZone;
+		}
+
+		// Auto-scroll
+		const rootRect = this.root.getBoundingClientRect();
+		const { scrollEdge, scrollMaxPerFrame } = this.opts;
+		let scrollDelta = 0;
+		if (ev.clientY - rootRect.top < scrollEdge) {
+			scrollDelta = -scrollMaxPerFrame * (1 - (ev.clientY - rootRect.top) / scrollEdge);
+		} else if (rootRect.bottom - ev.clientY < scrollEdge) {
+			scrollDelta = scrollMaxPerFrame * (1 - (rootRect.bottom - ev.clientY) / scrollEdge);
+		}
+		if (scrollDelta !== 0 && this.active.scrollRaf === null) {
+			const scroll = () => {
+				if (!this.active || scrollDelta === 0) { this.active && (this.active.scrollRaf = null); return; }
+				this.root.scrollTop += scrollDelta;
+				this.active.scrollRaf = window.requestAnimationFrame(scroll);
+			};
+			this.active.scrollRaf = window.requestAnimationFrame(scroll);
+		} else if (scrollDelta === 0 && this.active.scrollRaf !== null) {
+			window.cancelAnimationFrame(this.active.scrollRaf);
+			this.active.scrollRaf = null;
+		}
 	}
 
 	private onPointerUp(ev: PointerEvent): void {
-		// 1. If this.active.hoveredZone && zone.accepts(payload):
-		//      zone.onDrop(payload, ev)
-		// 2. Always: this.active.hoveredZone?.onLeave()
-		// 3. Tear down ghost, remove dragging class, release pointer capture,
-		//    detach the temp listeners, this.active = null.
-		throw new Error('not implemented');
+		if (!this.active) return;
+		const { hoveredZone, handle } = this.active;
+		if (hoveredZone?.accepts(handle.payload)) {
+			hoveredZone.onDrop(handle.payload, ev);
+		}
+		hoveredZone?.onLeave?.();
+		this.tearDown();
 	}
 
 	private onPointerCancel(): void {
-		// Same teardown as onPointerUp without invoking onDrop.
-		throw new Error('not implemented');
+		this.active?.hoveredZone?.onLeave?.();
+		this.tearDown();
+	}
+
+	private tearDown(): void {
+		if (!this.active) return;
+		if (this.active.scrollRaf !== null) window.cancelAnimationFrame(this.active.scrollRaf);
+		this.active.ghost.detach();
+		this.active.handle.el.removeClass('bv-dragging');
+		this.root.removeEventListener('pointermove', this.boundMove);
+		this.root.removeEventListener('pointerup', this.boundUp);
+		this.root.removeEventListener('pointercancel', this.boundCancel);
+		this.active = null;
 	}
 }

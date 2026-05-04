@@ -1,72 +1,104 @@
 /**
- * QueryAdapter — wraps the QueryController Bases hands to a custom view.
+ * QueryAdapter — normalises BasesEntry[] → ViewEntry[] once per data tick.
  *
- * Why this exists:
- *  - Insulates views from Bases internals so a future engine swap (Dataview,
- *    raw MetadataCache) needs to change only this file.
- *  - Normalises raw BasesEntry records into ViewEntry once per data tick
- *    (so views don't re-coerce in the hot path).
- *  - Exposes a single subscribe() rather than two events.
+ * Sits between the raw Bases API (BasesView.data, BasesView.allProperties)
+ * and the views. Views never touch BasesEntry or BasesPropertyId directly.
  */
 
-import type {
-	BasesEntry,
-	PropertyDescriptor,
-	QueryController,
-	ViewEntry,
-} from '../types';
+import {
+	BooleanValue,
+	DateValue,
+	ImageValue,
+	LinkValue,
+	ListValue,
+	NullValue,
+	NumberValue,
+	parsePropertyId,
+	type BasesEntry,
+	type BasesPropertyId,
+	type Value,
+} from 'obsidian';
 
-export class QueryAdapter {
-	private cachedEntries: readonly ViewEntry[] | null = null;
+import type { PropertyDescriptor, PropertyType, ViewEntry } from '../types';
 
-	constructor(private readonly controller: QueryController) {}
+/** Convert a Bases Value to a plain JS primitive for rendering/filtering. */
+export function valueToJs(v: Value | null): unknown {
+	if (v === null || v instanceof NullValue) return null;
+	if (v instanceof BooleanValue) return v.isTruthy();
+	if (v instanceof NumberValue) return parseFloat(v.toString());
+	if (v instanceof DateValue) return v.toString(); // ISO-8601
+	if (v instanceof ListValue) {
+		const arr: unknown[] = [];
+		for (let i = 0; i < v.length(); i++) arr.push(valueToJs(v.get(i)));
+		return arr;
+	}
+	// StringValue, ImageValue, LinkValue, TagValue, UrlValue → string
+	return v.toString();
+}
 
-	/** Cached, normalised snapshot. Recomputed when invalidate() is called. */
-	snapshot(): readonly ViewEntry[] {
-		// If cachedEntries is non-null, return it.
-		// Otherwise:
-		//   - Read raw = this.controller.getEntries()
-		//   - Map each BasesEntry → ViewEntry:
-		//       file, displayName=file.basename (or properties.title if string),
-		//       frontmatter=app.metadataCache.getFileCache(file)?.frontmatter ?? null,
-		//       properties=raw.properties (passthrough — Bases already merged
-		//       frontmatter + computed formulas).
-		//   - Cache and return.
-		throw new Error('not implemented');
+/** Infer our PropertyType from Value class + known Bases property id prefix. */
+export function inferType(propId: BasesPropertyId, sample: Value | null): PropertyType {
+	if (sample === null || sample instanceof NullValue) return 'unknown';
+	if (sample instanceof BooleanValue) return 'boolean';
+	if (sample instanceof NumberValue) return 'number';
+	if (sample instanceof DateValue) return 'date';
+	if (sample instanceof ImageValue) return 'image';
+	if (sample instanceof LinkValue) return 'link';
+	if (sample instanceof ListValue) {
+		// Peek first element for tags heuristic
+		if (sample.length() > 0) {
+			const first = sample.get(0).toString();
+			if (first.startsWith('#')) return 'tags';
+		}
+		return 'list';
+	}
+	const { name } = parsePropertyId(propId);
+	if (name === 'tags') return 'tags';
+	return 'string';
+}
+
+/** Normalise one BasesEntry into the engine's ViewEntry shape. */
+export function normaliseEntry(
+	entry: BasesEntry,
+	propIds: readonly BasesPropertyId[],
+): ViewEntry {
+	const properties: Record<string, unknown> = {};
+	for (const propId of propIds) {
+		const { name } = parsePropertyId(propId);
+		properties[name] = valueToJs(entry.getValue(propId));
 	}
 
-	properties(): readonly PropertyDescriptor[] {
-		return this.controller.getProperties();
-	}
+	const displayName =
+		(typeof properties['title'] === 'string' && properties['title']) ||
+		entry.file.basename;
 
-	getViewConfig<T = unknown>(): T {
-		return this.controller.getViewConfig<T>();
-	}
+	return {
+		file: entry.file,
+		displayName,
+		frontmatter: null, // filled lazily by views that need raw frontmatter
+		properties,
+	};
+}
 
-	saveViewConfig<T = unknown>(patch: Partial<T>): Promise<void> {
-		return this.controller.saveViewConfig<T>(patch);
-	}
+/** Build PropertyDescriptor[] from a set of entries + property ids. */
+export function deriveDescriptors(
+	propIds: readonly BasesPropertyId[],
+	entries: readonly BasesEntry[],
+	sampleLimit = 200,
+): PropertyDescriptor[] {
+	return propIds.map((propId) => {
+		const { name } = parsePropertyId(propId);
+		const sample = entries.slice(0, sampleLimit).map((e) => e.getValue(propId));
+		const nonNull = sample.filter((v) => v !== null && !(v instanceof NullValue));
 
-	/**
-	 * Subscribe to either kind of update. The callback is invoked with no args
-	 * — pull a fresh snapshot if you need data.
-	 *
-	 * Returns an unsubscriber.  AbstractView wraps this with this.register(...)
-	 * so cleanup is automatic.
-	 */
-	subscribe(cb: () => void): () => void {
-		const offData = this.controller.on('data-updated', () => {
-			this.cachedEntries = null;
-			cb();
-		});
-		const offConfig = this.controller.on('config-updated', () => {
-			// Config changes don't invalidate entries themselves, but the view
-			// needs to re-render with the new config blob.
-			cb();
-		});
-		return () => {
-			offData();
-			offConfig();
-		};
-	}
+		const type = nonNull.length > 0 ? inferType(propId, nonNull[0] ?? null) : 'unknown';
+
+		let enumValues: string[] | undefined;
+		if (type === 'string' && nonNull.length > 0) {
+			const distinct = new Set(nonNull.map((v) => v!.toString()));
+			if (distinct.size <= 30) enumValues = [...distinct].sort();
+		}
+
+		return { id: propId, key: name, type, enumValues };
+	});
 }

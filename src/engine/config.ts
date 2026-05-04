@@ -1,47 +1,64 @@
 /**
- * Helpers for reading/writing per-view config in the .base file.
+ * Thin wrapper around BasesViewConfig.get/set with coalesced writes.
  *
- * Bases owns the I/O — these are sugar over QueryAdapter that:
- *   - merges defaults + persisted overlay
- *   - throttles saves so dragging a setting slider doesn't write per pixel
+ * Views call `store.current()` to get the merged config (defaults + saved)
+ * and `store.patch(partial)` to persist changes. Multiple rapid patches
+ * are coalesced into one set call per key within THROTTLE_MS.
  */
 
-import type { QueryAdapter } from './query-adapter';
+import type { BasesViewConfig } from 'obsidian';
 
-const SAVE_THROTTLE_MS = 200;
+const THROTTLE_MS = 200;
 
 export class ViewConfigStore<TConfig extends object> {
 	private pendingPatch: Partial<TConfig> | null = null;
 	private flushTimer: number | null = null;
+	private flushResolvers: Array<() => void> = [];
 
 	constructor(
-		private readonly adapter: QueryAdapter,
+		private readonly config: BasesViewConfig,
 		private readonly defaults: TConfig,
 	) {}
 
-	/** Merged view of defaults + persisted config. Cheap; called on every render. */
 	current(): TConfig {
-		// Pseudocode: return { ...this.defaults, ...this.adapter.getViewConfig<TConfig>() }
-		throw new Error('not implemented');
+		const saved: Partial<TConfig> = {};
+		for (const key of Object.keys(this.defaults) as (keyof TConfig)[]) {
+			const v = this.config.get(key as string);
+			if (v !== undefined && v !== null) (saved as Record<string, unknown>)[key as string] = v;
+		}
+		return { ...this.defaults, ...saved };
 	}
 
-	/**
-	 * Queue a patch. Multiple calls within SAVE_THROTTLE_MS are coalesced into
-	 * one Bases write.  Resolved promise is shared across the batch.
-	 */
 	patch(partial: Partial<TConfig>): Promise<void> {
-		// Pseudocode:
-		//   merge into this.pendingPatch
-		//   if no flushTimer scheduled, schedule it via window.setTimeout
-		//     (NOT setInterval — we're one-shot)
-		//   on flush: const p = this.adapter.saveViewConfig(this.pendingPatch)
-		//             this.pendingPatch = null; this.flushTimer = null
-		//   return the in-flight promise so callers can await persistence
-		throw new Error('not implemented');
+		this.pendingPatch = { ...this.pendingPatch, ...partial };
+
+		if (this.flushTimer !== null) window.clearTimeout(this.flushTimer);
+
+		return new Promise<void>((resolve) => {
+			this.flushResolvers.push(resolve);
+			this.flushTimer = window.setTimeout(() => this.doFlush(), THROTTLE_MS);
+		});
 	}
 
-	/** Force any pending patch to flush immediately (used in onunload). */
-	async flush(): Promise<void> {
-		throw new Error('not implemented');
+	flush(): void {
+		if (this.flushTimer !== null) {
+			window.clearTimeout(this.flushTimer);
+			this.doFlush();
+		}
+	}
+
+	private doFlush(): void {
+		if (!this.pendingPatch) return;
+		const patch = this.pendingPatch;
+		this.pendingPatch = null;
+		this.flushTimer = null;
+
+		for (const [k, v] of Object.entries(patch)) {
+			this.config.set(k, v);
+		}
+
+		const resolvers = this.flushResolvers;
+		this.flushResolvers = [];
+		for (const r of resolvers) r();
 	}
 }

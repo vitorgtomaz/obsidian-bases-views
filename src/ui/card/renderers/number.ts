@@ -1,7 +1,3 @@
-/**
- * Number renderer — right-aligned, optional unit suffix, locale-aware grouping.
- */
-
 import type { RendererSpec } from '../renderer-registry';
 
 export const numberRenderer: RendererSpec = {
@@ -13,15 +9,21 @@ export const numberRenderer: RendererSpec = {
 		return typeof value === 'number' && Number.isFinite(value);
 	},
 	render(value, slot, _ctx) {
-		// Pseudocode:
-		//   const n = typeof value === 'number' ? value : Number(value)
-		//   if (!Number.isFinite(n)) return createDiv('bv-text', { text: String(value ?? '') })
-		//   const el = createDiv('bv-number')
-		//   const opts: Intl.NumberFormatOptions = {}
-		//   if typeof slot.decimals === 'number': opts.minimumFractionDigits = opts.maximumFractionDigits = slot.decimals
-		//   el.setText(n.toLocaleString(undefined, opts))
-		//   if typeof slot.unit === 'string': el.appendText(' ' + slot.unit)
-		//   return el
-		throw new Error('not implemented');
+		const el = document.createElement('div');
+		el.className = 'bv-number';
+		const n = typeof value === 'number' ? value : Number(value);
+		if (!Number.isFinite(n)) {
+			el.setText(String(value ?? ''));
+			return el;
+		}
+		const opts: Intl.NumberFormatOptions = {};
+		if (typeof slot.decimals === 'number') {
+			opts.minimumFractionDigits = slot.decimals;
+			opts.maximumFractionDigits = slot.decimals;
+		}
+		let text = n.toLocaleString(undefined, opts);
+		if (typeof slot.unit === 'string') text += ' ' + slot.unit;
+		el.setText(text);
+		return el;
 	},
 };

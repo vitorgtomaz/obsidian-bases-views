@@ -1,20 +1,9 @@
-/**
- * Plugin-level preferences (NOT per-view config — that lives in the .base file).
- *
- * Keep this surface tiny: the more knobs we expose here, the more state to
- * support across versions. Per-view options belong in the Bases options schema
- * for that view, not here.
- */
-
 import { App, PluginSettingTab, Setting } from 'obsidian';
 import type BasesViewsPlugin from './main';
 
 export interface BasesViewsSettings {
-	/** ms a touch must dwell before a card drag starts on mobile. */
 	touchDragHoldMs: number;
-	/** Trigger Obsidian's native hover preview on Ctrl/Cmd-hover over a card. */
 	hoverPreviewOnModifier: boolean;
-	/** Cap for in-memory body-content search index (LRU). */
 	bodySearchCacheSize: number;
 }
 
@@ -25,18 +14,59 @@ export const DEFAULT_SETTINGS: BasesViewsSettings = {
 };
 
 export class BasesViewsSettingTab extends PluginSettingTab {
-	constructor(
-		app: App,
-		private readonly plugin: BasesViewsPlugin,
-	) {
+	constructor(app: App, private readonly plugin: BasesViewsPlugin) {
 		super(app, plugin);
 	}
 
 	display(): void {
-		// Render one Setting per field above. Keep copy short, sentence-case.
-		// Reset values to DEFAULT_SETTINGS via a small "Restore defaults" button.
-		// On every change call this.plugin.saveSettings(); no debounce needed —
-		// settings UI is not a hot path.
-		throw new Error('not implemented');
+		const { containerEl } = this;
+		containerEl.empty();
+		containerEl.createEl('h2', { text: 'Bases Views' });
+
+		new Setting(containerEl)
+			.setName('Touch drag hold (ms)')
+			.setDesc('How long a touch must stay still before a card drag starts on mobile.')
+			.addSlider((s) =>
+				s.setLimits(100, 800, 50)
+					.setValue(this.plugin.settings.touchDragHoldMs)
+					.setDynamicTooltip()
+					.onChange(async (v) => {
+						this.plugin.settings.touchDragHoldMs = v;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Hover preview on modifier')
+			.setDesc('Show Obsidian\'s native page preview when hovering a card while holding Ctrl / ⌘.')
+			.addToggle((t) =>
+				t.setValue(this.plugin.settings.hoverPreviewOnModifier).onChange(async (v) => {
+					this.plugin.settings.hoverPreviewOnModifier = v;
+					await this.plugin.saveSettings();
+				}),
+			);
+
+		new Setting(containerEl)
+			.setName('Body search cache size')
+			.setDesc('Maximum number of note bodies cached for full-text search (higher = more memory).')
+			.addSlider((s) =>
+				s.setLimits(10, 200, 10)
+					.setValue(this.plugin.settings.bodySearchCacheSize)
+					.setDynamicTooltip()
+					.onChange(async (v) => {
+						this.plugin.settings.bodySearchCacheSize = v;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('Restore defaults')
+			.addButton((b) =>
+				b.setButtonText('Restore').onClick(async () => {
+					Object.assign(this.plugin.settings, DEFAULT_SETTINGS);
+					await this.plugin.saveSettings();
+					this.display();
+				}),
+			);
 	}
 }
